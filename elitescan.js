@@ -1,133 +1,100 @@
 const axios = require("axios");
-const moment = require("moment");
 const { bot } = require("../lib/");
 
-// ================= HELPER FUNCTIONS =================
+const ALCHEMY_KEY = "IO1rDGgr548lDTF1aDYMQ";
+const ETHERSCAN_KEY = "WPX16FXMJMAIVZ62NHX9S38MRBXSDNEG2V";
 
-function formatNumber(num) {
-  if (!num) return "0";
-  return parseFloat(num).toLocaleString(undefined, { maximumFractionDigits: 2 });
+function riskEngine(liquidity, holders) {
+  if (liquidity < 5000 || holders < 100) return "High";
+  if (liquidity < 15000 || holders < 300) return "Medium";
+  return "Low";
 }
-
-function formatPrice(num) {
-  if (!num) return "0";
-  return parseFloat(num).toFixed(8);
-}
-
-function timeAgo(timestamp) {
-  return moment(timestamp).fromNow();
-}
-
-// ================= ELITE SCAN =================
 
 bot(
   {
     pattern: "elitescan ?(.*)",
     fromMe: true,
-    desc: "Elite crypto contract scanner",
+    desc: "Multi-chain Elite Scanner",
     type: "crypto",
   },
   async (message, match) => {
+    if (!match) return message.send("Provide contract address.");
+
+    const contract = match.trim();
+
     try {
-      if (!match)
-        return await message.send(
-          "❌ Provide contract address\nExample:\n.elitescan 0x..."
-        );
+      // ================= DEXSCREENER MAIN =================
+      const dex = await axios.get(
+        `https://api.dexscreener.com/latest/dex/tokens/${contract}`
+      );
 
-      const contract = match.trim();
+      if (!dex.data.pairs?.length)
+        return message.send("Token not found.");
 
-      // ================= DEXSCREENER DATA =================
-      const dexURL = `https://api.dexscreener.com/latest/dex/tokens/${contract}`;
-      const dexResponse = await axios.get(dexURL);
+      const pair = dex.data.pairs[0];
 
-      if (!dexResponse.data.pairs || dexResponse.data.pairs.length === 0)
-        return await message.send("❌ Token not found on DexScreener.");
-
-      const pair = dexResponse.data.pairs[0];
-
-      const name = pair.baseToken.name;
-      const symbol = pair.baseToken.symbol;
       const chain = pair.chainId;
-      const price = formatPrice(pair.priceUsd);
-      const fdv = formatNumber(pair.fdv);
-      const liquidity = formatNumber(pair.liquidity.usd);
-      const volume = formatNumber(pair.volume.h24);
-      const priceChange1h = pair.priceChange.h1 || 0;
-      const priceChange24h = pair.priceChange.h24 || 0;
-      const buys = pair.txns.h1.buys;
-      const sells = pair.txns.h1.sells;
-      const pairAge = timeAgo(pair.pairCreatedAt);
+      const price = pair.priceUsd;
+      const liquidity = pair.liquidity.usd;
+      const mc = pair.fdv;
+      const volume1h = pair.volume.h1;
+      const holders = pair.baseToken.holders || "N/A";
 
-      // ================= HONEYPOT CHECK =================
-      let honeypotStatus = "Unknown";
+      // ================= DEX PAID CHECK =================
+      let dexPaid = "🔴 No";
       try {
-        const honeypot = await axios.get(
-          `https://api.honeypot.is/v2/IsHoneypot?address=${contract}&chain=${chain}`
+        const paid = await axios.get(
+          `https://api.dexscreener.com/orders/v1/${chain}/${contract}`
         );
-        honeypotStatus = honeypot.data.honeypotResult.isHoneypot
-          ? "🔴 Honeypot"
-          : "🟢 Safe";
-      } catch (e) {
-        honeypotStatus = "Unavailable";
-      }
+        if (paid.data?.length) dexPaid = "🟢 Dex Paid";
+      } catch {}
 
-      // ================= GOPLUS SECURITY =================
-      let securityFlags = [];
+      // ================= BOOST CHECK =================
+      let boosts = 0;
       try {
-        const goPlus = await axios.get(
-          `https://api.gopluslabs.io/api/v1/token_security/${chain}?contract_addresses=${contract}`
+        const boost = await axios.get(
+          `https://api.dexscreener.com/token-boosts/top/v1`
         );
+        boosts =
+          boost.data.find(
+            (b) => b.tokenAddress.toLowerCase() === contract.toLowerCase()
+          )?.boostCount || 0;
+      } catch {}
 
-        const sec = goPlus.data.result[contract];
+      // ================= ETHERSCAN HOLDER COUNT =================
+      let holderCount = holders;
+      try {
+        const ethScan = await axios.get(
+          `https://api.etherscan.io/api?module=token&action=tokenholdercount&contractaddress=${contract}&apikey=${ETHERSCAN_KEY}`
+        );
+        holderCount = ethScan.data.result;
+      } catch {}
 
-        if (sec.is_blacklisted === "1") securityFlags.push("Blacklisted");
-        if (sec.is_mintable === "1") securityFlags.push("Mintable");
-        if (sec.owner_change_balance === "1")
-          securityFlags.push("Owner Can Change Balance");
-        if (sec.is_proxy === "1") securityFlags.push("Proxy Contract");
+      const risk = riskEngine(liquidity, holderCount);
 
-        if (securityFlags.length === 0) securityFlags.push("No Major Risks");
-      } catch (e) {
-        securityFlags.push("Security Unavailable");
-      }
-
-      // ================= SOCIAL LINKS =================
-      let socials = "";
-      if (pair.info) {
-        if (pair.info.websites)
-          socials += pair.info.websites.map((w) => `🌐 ${w.url}\n`).join("");
-        if (pair.info.socials)
-          socials += pair.info.socials.map((s) => `🔗 ${s.url}\n`).join("");
-      }
-
-      // ================= OUTPUT FORMAT =================
+      const basedLink = `https://t.me/based_eth_bot?start=r_Elite_xyz_b_${contract}`;
 
       const output = `
-🔵 ${name} ($${symbol})
- ├ ${contract}
- └ #${chain} | ⏳ ${pairAge}
+🦅 ELITE DEGEN SCAN
 
-📊 Stats
- ├ USD   $${price}
- ├ MC    $${fdv}
- ├ Vol   $${volume}
- ├ LP    $${liquidity}
- ├ 1H    ${priceChange1h}% | 🟢${buys} 🔴${sells}
- └ 24H   ${priceChange24h}%
+Token: ${pair.baseToken.name} (${pair.baseToken.symbol})
+Price: $${price}
+MC: $${Number(mc).toLocaleString()}
+Liquidity: $${Number(liquidity).toLocaleString()}
+Holders: ${holderCount}
 
-🔒 Security
- ├ Honeypot: ${honeypotStatus}
- └ ${securityFlags.join(" | ")}
+${dexPaid}
+🔥 Boosts: ${boosts}
+📈 Volume 1h: ${volume1h}
+⚠️ Risk: ${risk}
 
-${socials ? "🌍 Socials:\n" + socials : ""}
-
-🔥 ELITE DEGEN SCAN
+${contract}${basedLink}
 `;
 
       await message.send(output);
-    } catch (error) {
-      console.log(error);
-      await message.send("❌ Elite Scan failed.");
+    } catch (e) {
+      console.log(e);
+      await message.send("Scan failed.");
     }
   }
 );
